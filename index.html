@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>J'Aime L'Art - Planification Bénévoles</title>
+    <meta name="description" content="Système de planification pour les bénévoles de la campagne J'Aime L'Art">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Firebase SDK v9 (Compat) -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+    
+    <style>
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin {
+            animation: spin 1s linear infinite;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fadeIn {
+            animation: fadeIn 0.3s ease-out;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-red-50 via-white to-orange-50 min-h-screen">
+    <div id="app"></div>
+
+    <script>
+        // ==========================================
+        // CONFIGURATION FIREBASE
+        // ==========================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyAo4EH_3LGWUBZ64hHjvtewKtVfE2o_OY4",
+            authDomain: "jaimelart-scheduler.firebaseapp.com",
+            databaseURL: "https://jaimelart-scheduler-default-rtdb.europe-west1.firebasedatabase.app",
+            projectId: "jaimelart-scheduler",
+            storageBucket: "jaimelart-scheduler.firebasestorage.app",
+            messagingSenderId: "956995682106",
+            appId: "1:956995682106:web:b440e54493cd2b6131da03"
+        };
+
+        // ==========================================
+        // INITIALISATION FIREBASE
+        // ==========================================
+        let database;
+        let isFirebaseConnected = false;
+
+        try {
+            firebase.initializeApp(firebaseConfig);
+            database = firebase.database();
+            
+            // Test de connexion
+            database.ref('.info/connected').on('value', (snapshot) => {
+                if (snapshot.val() === true) {
+                    isFirebaseConnected = true;
+                    console.log('✅ Firebase connecté avec succès');
+                } else {
+                    isFirebaseConnected = false;
+                    console.log('⚠️ Firebase déconnecté');
+                }
+            });
+        } catch (error) {
+            console.error('❌ Erreur Firebase:', error);
+            alert('Erreur de connexion à la base de données. Vérifiez votre configuration Firebase.');
+        }
+
+        // ==========================================
+        // STATE MANAGEMENT
+        // ==========================================
+        const state = {
+            isAdmin: false,
+            slots: [],
+            loading: true,
+            selectedSlot: null,
+            editingSlot: null,
+            showSlotForm: false,
+            showAdminLogin: false,
+            confirmationMessage: '',
+            errorMessage: ''
+        };
+
+        // ==========================================
+        // FIREBASE OPERATIONS
+        // ==========================================
+        async function loadSlots() {
+            try {
+                state.loading = true;
+                render();
+
+                const slotsRef = database.ref('slots');
+                slotsRef.on('value', (snapshot) => {
+                    const data = snapshot.val();
+                    
+                    if (data) {
+                        state.slots = Object.keys(data).map(key => ({
+                            id: key,
+                            ...data[key],
+                            participants: data[key].participants || []
+                        }));
+                    } else {
+                        // Initialiser avec des données par défaut
+                        state.slots = [];
+                        initializeDefaultSlots();
+                    }
+                    
+                    state.loading = false;
+                    render();
+                }, (error) => {
+                    console.error('Erreur de lecture:', error);
+                    state.errorMessage = 'Erreur de chargement des données';
+                    state.loading = false;
+                    render();
+                });
+            } catch (error) {
+                console.error('Erreur loadSlots:', error);
+                state.errorMessage = 'Impossible de charger les données';
+                state.loading = false;
+                render();
+            }
+        }
+
+        async function initializeDefaultSlots() {
+            const defaultSlots = [
+                {
+                    date: '2026-02-15',
+                    time: '09:00 - 12:00',
+                    location: 'Centre Ville - Place du Marché',
+                    maxParticipants: 5,
+                    participants: []
+                },
+                {
+                    date: '2026-02-15',
+                    time: '14:00 - 17:00',
+                    location: 'Quartier Résidentiel - Parc Central',
+                    maxParticipants: 4,
+                    participants: []
+                },
+                {
+                    date: '2026-02-20',
+                    time: '10:00 - 13:00',
+                    location: 'Zone Commerciale - Avenue Principale',
+                    maxParticipants: 6,
+                    participants: []
+                }
+            ];
+
+            for (const slot of defaultSlots) {
+                try {
+                    await database.ref('slots').push(slot);
+                } catch (error) {
+                    console.error('Erreur initialisation:', error);
+                }
+            }
+        }
+
+        async function saveSlot(slotData, slotId = null) {
+            try {
+                if (slotId) {
+                    await database.ref(`slots/${slotId}`).update(slotData);
+                } else {
+                    await database.ref('slots').push(slotData);
+                }
+                return true;
+            } catch (error) {
+                console.error('Erreur sauvegarde:', error);
+                alert('❌ Erreur lors de la sauvegarde');
+                return false;
+            }
+        }
+
+        async function deleteSlot(slotId) {
+            try {
+                await database.ref(`slots/${slotId}`).remove();
+                return true;
+            } catch (error) {
+                console.error('Erreur suppression:', error);
+                alert('❌ Erreur lors de la suppression');
+                return false;
+            }
+        }
+
+        async function addParticipant(slotId, participant) {
+            try {
+                const slot = state.slots.find(s => s.id === slotId);
+                const updatedParticipants = [...(slot.participants || []), participant];
+                await database.ref(`slots/${slotId}/participants`).set(updatedParticipants);
+                return true;
+            } catch (error) {
+                console.error('Erreur ajout participant:', error);
+                alert('❌ Erreur lors de l\'inscription');
+                return false;
+            }
+        }
+
+        async function removeParticipant(slotId, index) {
+            try {
+                const slot = state.slots.find(s => s.id === slotId);
+                const updatedParticipants = slot.participants.filter((_, i) => i !== index);
+                await database.ref(`slots/${slotId}/participants`).set(updatedParticipants);
+                return true;
+            } catch (error) {
+                console.error('Erreur suppression participant:', error);
+                alert('❌ Erreur lors de la suppression');
+                return false;
+            }
+        }
+
+        // ==========================================
+        // UTILITY FUNCTIONS
+        // ==========================================
+        function getSlotStatus(slot) {
+            const filled = (slot.participants || []).length;
+            const max = slot.maxParticipants;
+            if (filled === 0) return 'available';
+            if (filled >= max) return 'full';
+            return 'limited';
+        }
+
+        function formatDate(dateString) {
+            const date = new Date(dateString + 'T00:00:00');
+            return date.toLocaleDateString('fr-FR', { 
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+            });
+        }
+
+        function exportCSV() {
+            let csv = '\uFEFFDate,Heure,Lieu,Nom,Téléphone\n'; // BOM pour Excel
+            state.slots.forEach(slot => {
+                (slot.participants || []).forEach(p => {
+                    csv += `${slot.date},${slot.time},"${slot.location}","${p.name}",${p.phone}\n`;
+                });
+            });
+            
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `participants_jaimelart_${new Date().toISOString().split('T')[0]}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        }
+
+        // ==========================================
+        // EVENT HANDLERS
+        // ==========================================
+        function handleAdminLogin() {
+            const password = document.getElementById('adminPassword').value;
+            // TODO: Changez ce mot de passe pour la production !
+            if (password === 'admin123') {
+                state.isAdmin = true;
+                state.showAdminLogin = false;
+                render();
+            } else {
+                alert('❌ Mot de passe incorrect');
+            }
+        }
+
+        async function handleSlotSubmit(e) {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const slotData = {
+                date: formData.get('date'),
+                time: formData.get('time'),
+                location: formData.get('location'),
+                maxParticipants: parseInt(formData.get('maxParticipants')),
+                participants: state.editingSlot ? state.editingSlot.participants : []
+            };
+
+            if (!slotData.date || !slotData.time || !slotData.location) {
+                alert('⚠️ Veuillez remplir tous les champs');
+                return;
+            }
+
+            const success = await saveSlot(slotData, state.editingSlot?.id);
+            if (success) {
+                state.showSlotForm = false;
+                state.editingSlot = null;
+                render();
+            }
+        }
+
+        async function handleBooking(e) {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const participant = {
+                name: formData.get('name').trim(),
+                phone: formData.get('phone').trim()
+            };
+
+            if (!participant.name || !participant.phone) {
+                alert('⚠️ Veuillez remplir tous les champs');
+                return;
+            }
+
+            const slot = state.slots.find(s => s.id === state.selectedSlot);
+            if ((slot.participants || []).length >= slot.maxParticipants) {
+                alert('⚠️ Ce créneau est complet');
+                return;
+            }
+
+            const success = await addParticipant(state.selectedSlot, participant);
+            if (success) {
+                state.confirmationMessage = `✅ Merci ${participant.name} ! Votre participation est confirmée.`;
+                state.selectedSlot = null;
+                render();
+                setTimeout(() => {
+                    state.confirmationMessage = '';
+                    render();
+                }, 5000);
+            }
+        }
+
+        // ==========================================
+        // RENDER FUNCTIONS
+        // ==========================================
+        function renderLoading() {
+            return `
+                <div class="flex items-center justify-center min-h-screen">
+                    <div class="text-center">
+                        <div class="w-16 h-16 border-4 border-red-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                        <p class="text-gray-600 text-lg">Chargement des données...</p>
+                        <p class="text-gray-500 text-sm mt-2">Connexion à Firebase</p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderAdminDashboard() {
+            const availableCount = state.slots.filter(s => getSlotStatus(s) === 'available').length;
+            const limitedCount = state.slots.filter(s => getSlotStatus(s) === 'limited').length;
+            const fullCount = state.slots.filter(s => getSlotStatus(s) === 'full').length;
+            const totalParticipants = state.slots.reduce((acc, s) => acc + (s.participants || []).length, 0);
+
+            return `
+                <!-- Header Admin -->
+                <div class="bg-white shadow-lg">
+                    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-4">
+                                <div class="h-12 w-12 bg-red-600 rounded-lg flex items-center justify-center shadow-lg">
+                                    <span class="text-white font-bold text-xl">JA</span>
+                                </div>
+                                <div>
+                                    <h1 class="text-2xl font-bold text-gray-900">Tableau de Bord Admin</h1>
+                                    <p class="text-sm text-gray-600">
+                                        <span class="inline-flex items-center">
+                                            <span class="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></span>
+                                            Base de données en temps réel
+                                        </span>
+                                    </p>
+                                </div>
+                            </div>
+                            <button onclick="state.isAdmin=false; render();" 
+                                    class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition flex items-center space-x-2">
+                                <span>🚪</span>
+                                <span>Déconnexion</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                    <!-- Boutons d'action -->
+                    <div class="flex flex-wrap gap-4 mb-8">
+                        <button onclick="state.showSlotForm=true; state.editingSlot=null; render();" 
+                                class="flex items-center space-x-2 px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition shadow-md">
+                            <span>➕</span>
+                            <span>Nouveau Créneau</span>
+                        </button>
+                        <button onclick="exportCSV()" 
+                                class="flex items-center space-x-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition shadow-md">
+                            <span>📥</span>
+                            <span>Exporter CSV</span>
+                        </button>
+                    </div>
+
+                    <!-- Statistiques -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                        <div class="bg-white p-6 rounded-xl shadow-md border-l-4 border-green-500 animate-fadeIn">
+                            <p class="text-gray-600 text-sm mb-1">Créneaux Disponibles</p>
+                            <p class="text-3xl font-bold text-gray-900">${availableCount}</p>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl shadow-md border-l-4 border-orange-500 animate-fadeIn" style="animation-delay: 0.1s">
+                            <p class="text-gray-600 text-sm mb-1">Créneaux Partiels</p>
+                            <p class="text-3xl font-bold text-gray-900">${limitedCount}</p>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl shadow-md border-l-4 border-red-500 animate-fadeIn" style="animation-delay: 0.2s">
+                            <p class="text-gray-600 text-sm mb-1">Créneaux Complets</p>
+                            <p class="text-3xl font-bold text-gray-900">${fullCount}</p>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl shadow-md border-l-4 border-blue-500 animate-fadeIn" style="animation-delay: 0.3s">
+                            <p class="text-gray-600 text-sm mb-1">Total Participants</p>
+                            <p class="text-3xl font-bold text-gray-900">${totalParticipants}</p>
+                        </div>
+                    </div>
+
+                    <!-- Liste des créneaux -->
+                    <div class="space-y-4">
+                        ${state.slots.length > 0 ? state.slots.map(slot => renderAdminSlot(slot)).join('') : `
+                            <div class="bg-white rounded-xl shadow-md p-8 text-center">
+                                <p class="text-gray-600 text-lg mb-4">Aucun créneau créé</p>
+                                <button onclick="state.showSlotForm=true; render();" 
+                                        class="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700">
+                                    Créer le premier créneau
+                                </button>
+                            </div>
+                        `}
+                    </div>
+                </div>
+
+                ${state.showSlotForm ? renderSlotForm() : ''}
+            `;
+        }
+
+        function renderAdminSlot(slot) {
+            const status = getSlotStatus(slot);
+            const statusColors = {
+                available: 'border-green-500 bg-green-50',
+                limited: 'border-orange-500 bg-orange-50',
+                full: 'border-red-500 bg-red-50'
+            };
+            const statusLabels = {
+                available: '✅ Disponible',
+                limited: '⚠️ Places limitées',
+                full: '🔴 Complet'
+            };
+
+            return `
+                <div class="bg-white rounded-xl shadow-md border-l-4 ${statusColors[status]} p-6 animate-fadeIn">
+                    <div class="flex items-start justify-between mb-4">
+                        <div class="flex-1">
+                            <div class="flex flex-wrap items-center gap-2 mb-3">
+                                <span class="text-lg font-semibold text-gray-900">${formatDate(slot.date)}</span>
+                                <span class="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium">
+                                    🕒 ${slot.time}
+                                </span>
+                                <span class="px-3 py-1 ${statusColors[status]} rounded-full text-sm font-medium">
+                                    ${statusLabels[status]}
+                                </span>
+                            </div>
+                            <p class="text-gray-700 mb-2 flex items-center">
+                                <span class="mr-2">📍</span>
+                                <span>${slot.location}</span>
+                            </p>
+                            <p class="text-gray-700 flex items-center">
+                                <span class="mr-2">👥</span>
+                                <span><strong>${(slot.participants || []).length}</strong> / ${slot.maxParticipants} participants</span>
+                            </p>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button onclick='state.editingSlot=${JSON.stringify(slot).replace(/'/g, "\\'")}; state.showSlotForm=true; render();' 
+                                    class="p-2 bg-blue-100 text-blue-600 rounded-lg hover:bg-blue-200 transition" title="Modifier">
+                                ✏️
+                            </button>
+                            <button onclick="if(confirm('⚠️ Supprimer ce créneau et tous ses participants ?')) deleteSlot('${slot.id}')" 
+                                    class="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition" title="Supprimer">
+                                🗑️
+                            </button>
+                        </div>
+                    </div>
+
+                    ${(slot.participants || []).length > 0 ? `
+                        <div class="mt-4 pt-4 border-t border-gray-200">
+                            <h4 class="font-semibold text-gray-900 mb-3 flex items-center">
+                                <span class="mr-2">✅</span>
+                                Participants inscrits :
+                            </h4>
+                            <div class="space-y-2">
+                                ${(slot.participants || []).map((p, i) => `
+                                    <div class="flex items-center justify-between bg-gray-50 p-3 rounded-lg border border-gray-200 hover:bg-gray-100 transition">
+                                        <div class="flex items-center space-x-3">
+                                            <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center text-red-600 font-bold">
+                                                ${p.name.charAt(0).toUpperCase()}
+                                            </div>
+                                            <div>
+                                                <p class="font-medium text-gray-900">${p.name}</p>
+                                                <p class="text-sm text-gray-600">📱 ${p.phone}</p>
+                                            </div>
+                                        </div>
+                                        <button onclick="if(confirm('Retirer ${p.name} ?')) removeParticipant('${slot.id}', ${i})" 
+                                                class="p-2 text-red-600 hover:bg-red-50 rounded-lg transition" title="Retirer">
+                                            ❌
+                                        </button>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : '<p class="text-gray-500 italic mt-4">Aucun participant inscrit pour le moment</p>'}
+                </div>
+            `;
+        }
+
+        function renderSlotForm() {
+            const slot = state.editingSlot;
+            return `
+                <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 animate-fadeIn">
+                    <div class="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+                        <h3 class="text-xl font-bold text-gray-900 mb-4">
+                            ${slot ? '✏️ Modifier' : '➕ Nouveau'} Créneau
+                        </h3>
+                        <form onsubmit="handleSlotSubmit(event)">
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">📅 Date</label>
+                                    <input type="date" name="date" value="${slot?.date || ''}" required 
+                                           min="${new Date().toISOString().split('T')[0]}"
+                                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">🕒 Heure</label>
+                                    <input type="text" name="time" value="${slot?.time || ''}" placeholder="Ex: 09:00 - 12:00" required 
+                                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">📍 Lieu</label>
+                                    <input type="text" name="location" value="${slot?.location || ''}" placeholder="Ex: Centre Ville" required 
+                                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">👥 Nombre maximum de participants</label>
+                                    <input type="number" name="maxParticipants" value="${slot?.maxParticipants || 5}" min="1" max="50" required 
+                                           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                                </div>
+                            </div>
+                            <div class="flex space-x-3 mt-6">
+                                <button type="submit" 
+                                        class="flex-1 bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition font-medium shadow-md">
+                                    ${slot ? '💾 Modifier' : '✅ Créer'}
+                                </button>
+                                <button type="button" onclick="state.showSlotForm=false; state.editingSlot=null; render();" 
+                                        class="flex-1 bg-gray-200 text-gray-700 py-3 rounded-lg hover:bg-gray-300 transition font-medium">
+                                    ❌ Annuler
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderTeamMemberInterface() {
+            const availableSlots = state.slots.filter(s => getSlotStatus(s) !== 'full');
+
+            return `
+                <!-- Header Public -->
+                <div class="bg-white shadow-lg">
+                    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+                        <div class="text-center">
+                            <div class="h-16 w-16 bg-red-600 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-lg hover:scale-105 transition">
+                                <span class="text-white font-bold text-2xl">JA</span>
+                            </div>
+                            <h1 class="text-3xl md:text-4xl font-bold text-gray-900 mb-2">Rejoignez Notre Campagne</h1>
+                            <p class="text-gray-600 text-lg">J'Aime L'Art - Choisissez votre créneau de bénévolat</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                    <!-- Bouton Admin -->
+                    <div class="text-center mb-6">
+                        <button onclick="state.showAdminLogin=true; render();" 
+                                class="text-sm text-gray-600 hover:text-red-600 transition underline">
+                            🔐 Accès Administrateur
+                        </button>
+                    </div>
+
+                    <!-- Message de confirmation -->
+                    ${state.confirmationMessage ? `
+                        <div class="mb-6 bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded-lg animate-fadeIn">
+                            <p class="font-medium">${state.confirmationMessage}</p>
+                        </div>
+                    ` : ''}
+
+                    <!-- Liste des créneaux disponibles -->
+                    <div class="space-y-4">
+                        ${availableSlots.length > 0 ? availableSlots.map(slot => renderPublicSlot(slot)).join('') : `
+                            <div class="bg-white rounded-xl shadow-md p-12 text-center">
+                                <div class="text-6xl mb-4">😔</div>
+                                <p class="text-gray-600 text-lg mb-2">Aucun créneau disponible pour le moment</p>
+                                <p class="text-gray-500">Revenez plus tard ou contactez l'organisateur</p>
+                            </div>
+                        `}
+                    </div>
+                </div>
+
+                ${state.selectedSlot ? renderBookingModal() : ''}
+                ${state.showAdminLogin ? renderAdminLoginModal() : ''}
+            `;
+        }
+
+        function renderPublicSlot(slot) {
+            const status = getSlotStatus(slot);
+            const statusInfo = {
+                available: { color: 'bg-green-500', text: '✅ Disponible', badge: 'bg-green-100 text-green-700' },
+                limited: { color: 'bg-orange-500', text: '⚠️ Places limitées', badge: 'bg-orange-100 text-orange-700' }
+            };
+
+            return `
+                <div class="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition-all animate-fadeIn">
+                    <div class="${statusInfo[status].color} h-2"></div>
+                    <div class="p-6">
+                        <div class="flex items-start justify-between mb-4">
+                            <h3 class="text-xl font-bold text-gray-900 flex-1">${formatDate(slot.date)}</h3>
+                            <span class="px-3 py-1 ${statusInfo[status].badge} rounded-full text-xs font-medium ml-2">
+                                ${statusInfo[status].text}
+                            </span>
+                        </div>
+                        <div class="space-y-3 mb-6">
+                            <div class="flex items-center text-gray-700">
+                                <span class="text-2xl mr-3">🕒</span>
+                                <span class="font-medium">${slot.time}</span>
+                            </div>
+                            <div class="flex items-center text-gray-700">
+                                <span class="text-2xl mr-3">📍</span>
+                                <span>${slot.location}</span>
+                            </div>
+                            <div class="flex items-center text-gray-700">
+                                <span class="text-2xl mr-3">👥</span>
+                                <span><strong>${slot.maxParticipants - (slot.participants || []).length}</strong> place(s) restante(s) sur <strong>${slot.maxParticipants}</strong></span>
+                            </div>
+                        </div>
+                        <button onclick="state.selectedSlot='${slot.id}'; render();" 
+                                class="w-full bg-red-600 text-white py-4 rounded-lg hover:bg-red-700 transition font-medium shadow-md text-lg hover:scale-105 transform">
+                            🙋 Je m'inscris à ce créneau
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderBookingModal() {
+            const slot = state.slots.find(s => s.id === state.selectedSlot);
+            if (!slot) return '';
+            
+            return `
+                <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 animate-fadeIn">
+                    <div class="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+                        <h3 class="text-2xl font-bold text-gray-900 mb-4">✅ Confirmer votre participation</h3>
+                        <div class="mb-6 p-4 bg-red-50 rounded-lg border-l-4 border-red-500">
+                            <div class="space-y-2 text-sm">
+                                <p><strong>📅 Date :</strong> ${formatDate(slot.date)}</p>
+                                <p><strong>🕒 Heure :</strong> ${slot.time}</p>
+                                <p><strong>📍 Lieu :</strong> ${slot.location}</p>
+                            </div>
+                        </div>
+                        <form onsubmit="handleBooking(event)">
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">👤 Nom complet *</label>
+                                    <input type="text" name="name" required placeholder="Votre nom" autofocus
+                                           class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">📱 Téléphone *</label>
+                                    <input type="tel" name="phone" required placeholder="Votre numéro"
+                                           class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                                </div>
+                            </div>
+                            <div class="flex space-x-3 mt-6">
+                                <button type="submit" 
+                                        class="flex-1 bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition font-medium shadow-md">
+                                    ✅ Confirmer mon inscription
+                                </button>
+                                <button type="button" onclick="state.selectedSlot=null; render();" 
+                                        class="flex-1 bg-gray-200 text-gray-700 py-3 rounded-lg hover:bg-gray-300 transition font-medium">
+                                    ❌ Annuler
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderAdminLoginModal() {
+            return `
+                <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 animate-fadeIn">
+                    <div class="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6">
+                        <h3 class="text-xl font-bold text-gray-900 mb-4">🔐 Connexion Admin</h3>
+                        <input type="password" id="adminPassword" placeholder="Mot de passe" autofocus
+                               onkeypress="if(event.key==='Enter') handleAdminLogin()"
+                               class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent mb-4">
+                        <div class="flex space-x-3">
+                            <button onclick="handleAdminLogin()" 
+                                    class="flex-1 bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition font-medium">
+                                🔓 Connexion
+                            </button>
+                            <button onclick="state.showAdminLogin=false; render();" 
+                                    class="flex-1 bg-gray-200 text-gray-700 py-3 rounded-lg hover:bg-gray-300 transition font-medium">
+                                ❌ Annuler
+                            </button>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-4 text-center">
+                            💡 Mot de passe de démonstration : <code class="bg-gray-100 px-2 py-1 rounded">admin123</code>
+                        </p>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ==========================================
+        // MAIN RENDER
+        // ==========================================
+        function render() {
+            const app = document.getElementById('app');
+            if (state.loading) {
+                app.innerHTML = renderLoading();
+            } else if (state.isAdmin) {
+                app.innerHTML = renderAdminDashboard();
+            } else {
+                app.innerHTML = renderTeamMemberInterface();
+            }
+        }
+
+        // ==========================================
+        // INITIALIZE APP
+        // ==========================================
+        window.addEventListener('DOMContentLoaded', () => {
+            console.log('🚀 Application J\'Aime L\'Art démarrée');
+            loadSlots();
+        });
+
+        // Log des erreurs globales
+        window.addEventListener('error', (e) => {
+            console.error('❌ Erreur:', e.error);
+        });
+    </script>
+</body>
+</html>
